@@ -5,6 +5,7 @@ A tool designed to securely collect and decrypt stored browser credentials from 
 1. It will connect to a serveo tunnel allowing it to be accessable via the internet
 2. Customizes a unique useragent per user request to ensure it isn't spammed
 3. Decrypts the passwords locally
+4. Every time you re-run the script it will get you a new Serveo URL such as https://28t8t8hgjh832h8hhoigi242ogn.serveo.net but the same one can be used many times until you stop the script from running.
 
 ## 🚨 Important Notice
 
